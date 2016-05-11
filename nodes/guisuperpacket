@@ -1,0 +1,229 @@
+#!/usr/bin/env python
+
+import time
+import uuid
+import os.path
+import threading
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+import roslib
+roslib.load_manifest('rospy')
+roslib.load_manifest('ros_flydra')
+roslib.load_manifest('geometry_msgs')
+roslib.load_manifest('std_msgs')
+import rospy
+
+from ros_flydra.msg import flydra_mainbrain_super_packet, flydra_mainbrain_packet, flydra_object
+from std_msgs.msg import String
+
+from flydra.analysis.save_as_flydra_hdf5 import get_flydra_hdf5_datatypes, save_as_flydra_hdf5
+
+
+class _FakeFlydra(object):
+
+    def __init__(self, filename, uuid=None, fps=100.):
+        self._filename = filename
+        self._fps = float(fps)
+        if not uuid:
+            uuid = '0'*32
+
+        traj_datatypes, traj_start_datatypes, experiment_info_datatypes = get_flydra_hdf5_datatypes()
+
+        self._uuid = uuid
+        self._traj_data = {k[0]:[] for k in traj_datatypes}
+        self._traj_starts_data = {k[0]:[] for k in traj_start_datatypes}
+
+        self._obj_id = None
+
+    def lock_on(self, obj_id):
+        self._obj_id = obj_id
+        t = rospy.get_rostime()
+        self._traj_starts_data["obj_id"].append(obj_id)
+        self._traj_starts_data["first_timestamp_secs"].append(t.secs)
+        self._traj_starts_data["first_timestamp_nsecs"].append(t.nsecs)
+
+    def add_observation(self, framenumber, x, y, z, cov_x=np.nan, cov_y=np.nan, cov_z=np.nan):
+        if self._obj_id is None:
+            return
+        self._traj_data['x'].append(x)
+        self._traj_data['y'].append(y)
+        self._traj_data['z'].append(z)
+        self._traj_data['covariance_x'].append(cov_x)
+        self._traj_data['covariance_y'].append(cov_y)
+        self._traj_data['covariance_z'].append(cov_z)
+        self._traj_data['framenumber'].append(framenumber)
+        self._traj_data['obj_id'].append(self._obj_id)
+
+    def save(self):
+        traj_datatypes, traj_start_datatypes, experiment_info_datatypes = get_flydra_hdf5_datatypes()
+
+        # convert intermediate data into numpy structured arrays
+        n = len(self._traj_data['obj_id'])
+        traj_arr = np.zeros(n, dtype=traj_datatypes)
+        for k in self._traj_data:
+            traj_arr[k] = self._traj_data[k]
+
+        n = len(self._traj_starts_data['obj_id'])
+        traj_start_arr = np.zeros(n, dtype=traj_start_datatypes)
+        for k in self._traj_starts_data:
+            traj_start_arr[k] = self._traj_starts_data[k]
+
+        experiment_info_arr = np.array([self._uuid], dtype=experiment_info_datatypes)
+
+        h5fname = os.path.basename(self._filename)
+
+        save_as_flydra_hdf5(newfilename=self._filename,
+                            data={"trajectories":traj_arr,
+                                  "trajectory_start_times":traj_start_arr,
+                                  "experiment_info":experiment_info_arr},
+                            tzname='CET',
+                            fps=self._fps,
+                            smoothed_source='kalman_estimates',
+                            smoothed_data_filename=h5fname, raw_data_filename=h5fname,
+                            dynamic_model_name='EKF mamarama, units: mm',
+                            recording_flydra_version='0.6.8',
+                            smoothing_flydra_version='0.6.8')
+
+
+class MPLGui(object):
+
+    def __init__(self, xlim, ylim, uuid, save_h5):
+        self._fig = plt.figure()
+        self._ax = self._fig.add_subplot(111, xlim=xlim, ylim=ylim)
+
+        bl = xlim[0],ylim[0]
+        br = xlim[1],ylim[0]
+        tr = xlim[1],ylim[1]
+        tl = xlim[0],ylim[1]
+        self.polygon = plt.Polygon([bl, br, tr, tl, bl])
+        self._ax.add_patch(self.polygon)
+
+        self.cidmotion = self._fig.canvas.mpl_connect(
+            'motion_notify_event', self.on_motion)
+
+        self.cidscroll = self._fig.canvas.mpl_connect(
+            'scroll_event', self.on_scroll)
+
+        self.cidpress = self._fig.canvas.mpl_connect(
+            'button_press_event', self.on_press)
+
+        self.pub = rospy.Publisher('flydra_mainbrain/super_packets', flydra_mainbrain_super_packet)
+
+        if uuid:
+            self._pubuuid = rospy.Publisher('experiment_uuid', String, latch=True)
+            self._pubuuid.publish(uuid)
+
+        self._flydra_lock = threading.Lock()
+        if save_h5:
+            fname = os.path.join(save_h5,
+                                 time.strftime('%Y%m%d_%H%M%S.simple_flydra.h5'))
+            self._flydra = _FakeFlydra(fname, uuid)
+        else:
+            self._flydra = None
+
+        self.px = self.py = self.pz = 0
+        self.last_time = rospy.get_time()
+        self.framenumber = int(self.last_time)
+        self.obj_id = 1
+
+        # calculate and send position at 100hz, as flydra does
+        hz = 100
+        rospy.Timer(rospy.Duration(secs=0, nsecs=int(1e9/hz)), self._update)
+
+    def _update(self, timer):
+        self.framenumber += 1
+        with self._flydra_lock:
+            if self._flydra is not None:
+                self._flydra.add_observation(self.framenumber, self.px, self.py, self.pz)
+
+        rt = rospy.get_rostime()
+        now = rt.to_sec()
+        dt = now - self.last_time
+        if dt <= 0:
+            return True
+        self.last_time = now
+
+        lpx = self.px; lpy = self.py; lpz = self.pz
+        vx = (self.px - lpx) / dt
+        vy = (self.py - lpy) / dt
+        vz = (self.pz - lpz) / dt
+
+        msg = flydra_mainbrain_super_packet()
+        packet = flydra_mainbrain_packet()
+
+        objects = []
+
+        obj = flydra_object()
+        obj.obj_id = self.obj_id
+        obj.position.x = self.px
+        obj.position.y = self.py
+        obj.position.z = self.pz
+        obj.velocity.x = vx
+        obj.velocity.y = vy
+        obj.velocity.z = vz
+        objects.append(obj)
+
+        packet.framenumber = self.framenumber
+        packet.reconstruction_stamp = rt
+        packet.acquire_stamp = rt
+        packet.objects = objects
+
+        msg.packets = [packet]
+
+        self.pub.publish(msg)
+
+    def on_motion(self, event):
+        if event.inaxes != self.polygon.axes: return
+        self.px = event.xdata
+        self.py = event.ydata
+
+    def on_scroll(self, event):
+        if event.inaxes != self.polygon.axes: return
+        if event.button == 'up':
+            delta = +0.05
+        elif event.button == 'down':
+            delta = -0.05
+        else:
+            delta = 0.0
+        self.pz += delta
+
+    def on_press(self, event):
+        if event.inaxes != self.polygon.axes: return
+        if event.button == 1:
+            self.obj_id += 1
+            with self._flydra_lock:
+                if self._flydra is not None:
+                    self._flydra.lock_on(self.obj_id)
+
+    def close(self):
+        with self._flydra_lock:
+            if self._flydra is not None:
+                self._flydra.save()
+                self._flydra = None
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('--save-h5', metavar='DIRECTORY',
+                        help='save a simple_flydra.h5 file in this dir')
+    parser.add_argument('--publish-uuid', action='store_true',
+                        help='generate and publish an experiment uuid')
+
+    argv = rospy.myargv()
+    args = parser.parse_args(argv[1:])
+
+    rospy.init_node('guisuperpacket', disable_signals=True)
+
+    f = MPLGui(xlim=(-1, 1), ylim=(-1, 1),
+               uuid=uuid.uuid1().get_hex() if args.publish_uuid else None,
+               save_h5=args.save_h5)
+
+    try:
+        plt.show()
+    except KeyboardInterrupt:
+        pass
+
+    f.close()
