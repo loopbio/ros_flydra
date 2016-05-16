@@ -15,6 +15,7 @@ roslib.load_manifest('geometry_msgs')
 roslib.load_manifest('std_msgs')
 import rospy
 
+from ros_flydra.tracking_volume import get_tracking_volume
 from ros_flydra.msg import flydra_mainbrain_super_packet, flydra_mainbrain_packet, flydra_object
 from std_msgs.msg import String
 
@@ -92,16 +93,40 @@ class _FakeFlydra(object):
 
 class MPLGui(object):
 
-    def __init__(self, xlim, ylim, uuid, save_h5):
+    def __init__(self, uuid, save_h5):
         self._fig = plt.figure()
-        self._ax = self._fig.add_subplot(111, xlim=xlim, ylim=ylim)
+        self._ax = self._fig.add_subplot(111)
+        self._ax.set_aspect('equal')
 
-        bl = xlim[0],ylim[0]
-        br = xlim[1],ylim[0]
-        tr = xlim[1],ylim[1]
-        tl = xlim[0],ylim[1]
-        self.polygon = plt.Polygon([bl, br, tr, tl, bl])
+        self._ztxt = self._ax.text(0.02, 0.02, 'z=0', transform=self._ax.transAxes)
+
+        self._vol = get_tracking_volume()
+
+        # draw a clear polygon for hit testing
+        xlim, ylim, zlim = self._vol.get_bounds()
+        bl = xlim[0], ylim[0]
+        br = xlim[1], ylim[0]
+        tr = xlim[1], ylim[1]
+        tl = xlim[0], ylim[1]
+        self.polygon = plt.Polygon([bl, br, tr, tl, bl], color='none')
         self._ax.add_patch(self.polygon)
+
+        # draw a representation of the axis
+        self._vol.set_bounds_mpl(self._ax, in_3d=False)
+        self._vol.draw_mpl(self._ax, in_3d=False)
+
+        # put the axis in the middle
+        # Move left y-axis and bottim x-axis to centre, passing through (0,0)
+        self._ax.spines['left'].set_position('center')
+        self._ax.spines['bottom'].set_position('center')
+
+        # Eliminate upper and right axes
+        self._ax.spines['right'].set_color('none')
+        self._ax.spines['top'].set_color('none')
+
+        # Show ticks in the left and lower axes only
+        self._ax.xaxis.set_ticks_position('bottom')
+        self._ax.yaxis.set_ticks_position('left')
 
         self.cidmotion = self._fig.canvas.mpl_connect(
             'motion_notify_event', self.on_motion)
@@ -195,6 +220,10 @@ class MPLGui(object):
             delta = 0.0
         self.pz += delta
 
+        self._ztxt.set_text('z=%0.2f' % self.pz)
+        self._fig.canvas.draw()
+
+
     def on_press(self, event):
         if event.inaxes != self.polygon.axes: return
         if event.button == 1:
@@ -223,8 +252,7 @@ if __name__ == "__main__":
 
     rospy.init_node('guisuperpacket', disable_signals=True)
 
-    f = MPLGui(xlim=(-1, 1), ylim=(-1, 1),
-               uuid=uuid.uuid1().get_hex() if args.publish_uuid else None,
+    f = MPLGui(uuid=uuid.uuid1().get_hex() if args.publish_uuid else None,
                save_h5=args.save_h5)
 
     try:
