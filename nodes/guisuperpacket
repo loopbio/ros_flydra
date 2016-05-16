@@ -18,7 +18,10 @@ import rospy
 from ros_flydra.msg import flydra_mainbrain_super_packet, flydra_mainbrain_packet, flydra_object
 from std_msgs.msg import String
 
-from flydra.analysis.save_as_flydra_hdf5 import get_flydra_hdf5_datatypes, save_as_flydra_hdf5
+try:
+    from flydra.analysis.save_as_flydra_hdf5 import get_flydra_hdf5_datatypes, save_as_flydra_hdf5
+except ImportError:
+    get_flydra_hdf5_datatypes = save_as_flydra_hdf5 = None
 
 
 class _FakeFlydra(object):
@@ -116,12 +119,15 @@ class MPLGui(object):
             self._pubuuid.publish(uuid)
 
         self._flydra_lock = threading.Lock()
+        self._flydra = None
         if save_h5:
-            fname = os.path.join(save_h5,
-                                 time.strftime('%Y%m%d_%H%M%S.simple_flydra.h5'))
-            self._flydra = _FakeFlydra(fname, uuid)
-        else:
-            self._flydra = None
+            if get_flydra_hdf5_datatypes is not None:
+                fname = os.path.join(save_h5,
+                                     time.strftime('%Y%m%d_%H%M%S.simple_flydra.h5'))
+                self._flydra = _FakeFlydra(fname, uuid)
+            else:
+                print "flydra not installed, writing h5 file disabled"
+
 
         self.px = self.py = self.pz = 0
         self.last_time = rospy.get_time()
