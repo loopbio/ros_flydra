@@ -178,7 +178,7 @@ class Node(object):
                 pub.publish(msg)
 
     def in_volume_of_interest(self,position):
-        return not (((position.z < 0.05) or (position.z > 0.95) ) or ( (position.x**2 + position.y**2) > 0.45**2))
+        return not (((position.z < -0.95) or (position.z > 0.95) ) or ( (position.x**2 + position.y**2) > 0.45**2))
 
     def on_flydra_mainbrain_super_packets(self,data):
         n_objects = 0
