@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import mpl_toolkits.mplot3d.axes3d as p3
 import matplotlib.animation as animation
 import roslib
-roslib.load_manifest('strawlab_freeflight_experiments')
+roslib.load_manifest('ros_flydra')
 import rospy
 import ros_flydra.msg
 import argparse
