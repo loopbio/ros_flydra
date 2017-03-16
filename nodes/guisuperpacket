@@ -154,7 +154,7 @@ class MPLGui(object):
                 print "flydra not installed, writing h5 file disabled"
 
 
-        self.px = self.py = self.pz = 0
+        self.px = self.py = self.pz = self.lpx = self.lpy = self.lpz = 0
         self.last_time = rospy.get_time()
         self.framenumber = int(self.last_time)
         self.obj_id = 1
@@ -176,10 +176,11 @@ class MPLGui(object):
             return True
         self.last_time = now
 
-        lpx = self.px; lpy = self.py; lpz = self.pz
-        vx = (self.px - lpx) / dt
-        vy = (self.py - lpy) / dt
-        vz = (self.pz - lpz) / dt
+        vx = (self.px - self.lpx) / dt
+        vy = (self.py - self.lpy) / dt
+        vz = (self.pz - self.lpz) / dt
+
+        self.lpx = self.px; self.lpy = self.py; self.lpz = self.pz
 
         msg = flydra_mainbrain_super_packet()
         packet = flydra_mainbrain_packet()
@@ -261,3 +262,4 @@ if __name__ == "__main__":
         pass
 
     f.close()
+
